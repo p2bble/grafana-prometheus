@@ -1,180 +1,206 @@
-# 전역 설정
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+# Docker Compose 파일 버전
+version: '3.6'
 
-# Alertmanager 설정
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-            - 'alertmanager:9093'
+# 서비스 간 통신을 위한 가상 네트워크 정의
+networks:
+  # 애플리케이션 서비스들이 사용할 네트워크
+  app-tier:
+    driver: bridge
+  # 모니터링 서비스들이 사용할 네트워크
+  monitoring-tier:
+    driver: bridge
 
-# 규칙 파일 로드
-rule_files:
-  - '/etc/prometheus/rules/*.yml'
+# 데이터 영구 저장을 위한 볼륨 정의
+volumes:
+  prometheus: # 프로메테우스 데이터 저장용
+  alertmanager-data: # 얼럿매니저 데이터 저장용
+  grafana-data: # 그라파나 데이터 저장용
 
-# 메트릭 수집 대상(Scrape Target) 목록
-scrape_configs:
-  ################################################################################
-  # 기본 모니터링 (프로메테우스 자신, Docker 컨테이너)
-  ################################################################################
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9099']
+# 실행할 서비스(컨테이너)들 정의
+services:
+  ################################
+  #     Monitoring Services
+  ################################
 
-  - job_name: 'cadvisor'
-    static_configs:
-      - targets: ['cadvisor:8080']
+  # Prometheus: 메트릭 수집 및 시계열 데이터베이스
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: always
+    volumes:
+      - ./prometheus:/etc/prometheus # 프로메테우스 설정 파일(prometheus.yml, rules 등) 마운트
+      - prometheus:/prometheus     # 수집한 메트릭 데이터 저장용 볼륨
+    command:
+      - '--web.listen-address=0.0.0.0:9099'          # 웹 UI 포트 설정
+      - '--config.file=/etc/prometheus/prometheus.yml' # 설정 파일 경로
+      - '--storage.tsdb.path=/prometheus'            # 데이터 저장 경로
+      - '--storage.tsdb.retention.time=180d'         # 데이터 보관 기간 (180일)
+      - '--web.enable-lifecycle'                     # API를 통한 재시작/리로드 활성화
+      - '--web.enable-admin-api'                     # Grafana 알림 관리를 위한 관리자 API 활성화
+    ports:
+      - "9099:9099"
+    networks:
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 4G
 
-  ################################################################################
-  # 서버 OS 및 하드웨어 모니터링 (Node Exporter)
-  ################################################################################
-  - job_name: 'node-exporter'
-    static_configs:
-      - targets: ['<VM_SERVER_IP>:9100']
-        labels:
-          nodename: 'vm-server-01'
-      - targets: ['<DEV_SERVER_IP>:9100']
-        labels:
-          nodename: 'dev-server'
-      - targets: ['<GPU_SERVER_IP>:9100']
-        labels:
-          nodename: 'dev-gpu-server'
-      - targets: ['<GITLAB_SERVER_IP>:9100']
-        labels:
-          nodename: 'gitlab-server'
-      - targets: ['<GITLAB_RUNNER_IP>:9100']
-        labels:
-          nodename: 'gitlab-runner'
-      - targets: ['<ERP_SERVER_IP>:9100']
-        labels:
-          nodename: 'ERP-server'
+  # Alertmanager: Prometheus에서 발생한 알림을 그룹화, 중복제거 후 실제 채널(Jandi 등)로 전송
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: alertmanager
+    restart: always
+    volumes:
+      - ./prometheus:/etc/alertmanager # Alertmanager 설정 파일(alertmanager.yml) 마운트
+      - alertmanager-data:/alertmanager # 알림 상태 데이터 저장용 볼륨
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - "9093:9093"
+    networks:
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 512M 
 
-  ################################################################################
-  # 가상화 플랫폼 모니터링 (KVM/Libvirt)
-  ################################################################################
-  - job_name: 'libvirt-exporter'
-    static_configs:
-      - targets:
-        - '<DEV_SERVER_IP>:9177'
-        - '<GPU_SERVER_IP>:9177'
-        - '<VM_SERVER_IP>:9177'
+  # Grafana: 메트릭/로그 데이터를 시각화하는 대시보드 도구
+  grafana:
+    image: grafana/grafana:9.1.2 
+    container_name: grafana
+    restart: always
+    volumes:
+      - grafana-data:/var/lib/grafana # 대시보드, 데이터소스 등 설정 데이터 영구 저장
+    ports:
+      - "38889:38889"
+    environment:
+      - GF_SERVER_HTTP_PORT=38889
+      - GF_SECURITY_ADMIN_PASSWORD=<YOUR_GRAFANA_ADMIN_PASSWORD> # <-- 민감 정보 수정
+    networks:
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G 
 
-  ################################################################################
-  # 서비스 및 엔드포인트 가용성 모니터링 (Blackbox Exporter)
-  ################################################################################
-  - job_name: 'blackbox-http'
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets:
-        - https://your-service-domain.com
-        - https://your-dev-service.com
-        - https://your-erp-service.com
-        - http://<PUBLIC_IP_ADDRESS>
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+  # Loki: 로그 수집 및 저장 시스템
+  loki:
+    image: grafana/loki:2.9.0 
+    container_name: loki
+    restart: always
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki:/etc/loki # loki 설정 파일 마운트
+    ports:
+      - "3100:3100"
+    networks:
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 512M 
 
-  - job_name: 'blackbox-tcp'
-    metrics_path: /probe
-    params:
-      module: [tcp_connect]
-    static_configs:
-      - targets:
-        - '<YOUR_MQTT_BROKER_IP>:1883'
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+  # Promtail: 로그 파일을 읽어 Loki로 전송하는 에이전트
+  promtail:
+    image: grafana/promtail:2.9.0 
+    container_name: promtail
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/log:/var/log # 호스트의 /var/log 디렉토리 접근
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro # Docker 컨테이너 로그 접근 13]
+      - ./promtail-config.yml:/etc/promtail/config-docker.yml # promtail 설정 파일 13]
+    command: -config.file=/etc/promtail/config-docker.yml
+    networks:
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
 
-  - job_name: 'blackbox-icmp'
-    metrics_path: /probe
-    params:
-      module: [icmp]
-    static_configs:
-      - targets:
-        - <ICMP_TARGET_IP_1>
-        - <ICMP_TARGET_IP_2>
-        - <ICMP_TARGET_IP_3>
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+  ################################
+  #         Exporters
+  ################################
 
-  ################################################################################
-  # 네트워크 장비 모니터링 (SNMP Exporter)
-  ################################################################################
-  - job_name: 'snmp'
-    scrape_interval: 1m
-    scrape_timeout: 50s
-    params:
-      module: [if_mib_standard] # 기본 모듈
-    static_configs:
-      - targets:
-        # --- 스위치 ---
-        - <CISCO_SWITCH_IP_1>
-        - <CISCO_SWITCH_IP_2>
-        - <NETGEAR_SWITCH_IP_1>
-        # --- 라우터/AP ---
-        - <ROUTER_IP_1>
-        - <ARUBA_AP_IP_1>
-        - <ORBI_AP_IP_1>
-        # --- iDRAC (idrac 모듈로 relabel 됨) ---
-        - <ERP_IDRAC_IP>
-        - <GPU_IDRAC_IP>
-        - <DEV_IDRAC_IP>
-        - <VM_IDRAC_IP>
+  # cAdvisor: 각 Docker 컨테이너의 리소스 사용량(CPU, Mem 등)을 수집
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2 
+    container_name: cadvisor
+    restart: always
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G 
 
-    relabel_configs:
-      # iDRAC 장비 IP 대역(예: 192.168.100.15x)인 경우, module을 'idrac'으로 변경
-      - source_labels: [__address__]
-        regex: '192\.168\.100\.15.*' # <-- 예시 IP 대역, 실제 환경에 맞게 수정
-        target_label: __param_module
-        replacement: 'idrac'
+  # Blackbox Exporter: HTTP, TCP 등 엔드포인트의 외부 가용성을 점검
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest 
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    networks:
+      - monitoring-tier
 
-      # Iptime 장비 IP 대역(예: 192.168.102.x)인 경우, module을 'if_mib_iptime'으로 변경
-      - source_labels: [__address__]
-        regex: '192\.168\.102\..*' # <-- 예시 IP 대역, 실제 환경에 맞게 수정
-        target_label: __param_module
-        replacement: 'if_mib_iptime'
+  # HAProxy Exporter: HAProxy의 상태 및 통계 정보를 수집
+  haproxy-exporter:
+    image: prom/haproxy-exporter:v0.13.0 
+    container_name: haproxy-exporter
+    restart: always
+    command:
+      # <-- [중요] ID와 비밀번호를 플레이스홀더로 변경했습니다.
+      - --haproxy.scrape-uri=http://<YOUR_HAPROXY_USER>:<YOUR_HAPROXY_PASSWORD>@haproxy:9001/haproxy?stats;csv 
+    networks:
+      - app-tier
+      - monitoring-tier
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
 
-      # --- 아래는 모든 타겟에 공통으로 적용되는 설정 ---
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        # snmp-exporter가 실행 중인 호스트의 IP와 포트로 변경
-        replacement: <YOUR_SNMP_EXPORTER_HOST_IP>:9116
+  # SNMP Exporter: SNMP를 통해 네트워크 장비 등의 정보를 수집
+  snmp-exporter:
+    image: prom/snmp-exporter:v0.21.0 
+    container_name: snmp-exporter
+    restart: always
+    network_mode: host
+    volumes:
+      - ./prometheus/snmp.yml:/etc/snmp.yml
+    command:
+      - "--config.file=/etc/snmp.yml"
+      - "--log.level=debug"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2' 
+          memory: 256M 
 
-  ################################################################################
-  # 애플리케이션 및 서비스 모니터링 (HAProxy, GitLab 등)
-  ################################################################################
-  - job_name: 'haproxy'
-    static_configs:
-      - targets: ['haproxy-exporter:9101']
-
-  - job_name: 'gitlab'
-    static_configs:
-      - targets:
-        - '<GITLAB_SERVER_IP>:9100'  # Node
-        - '<GITLAB_SERVER_IP>:9121'  # Redis
-        - '<GITLAB_SERVER_IP>:9187'  # Postgres
-        - '<GITLAB_SERVER_IP>:9168'  # Puma
-        - '<GITLAB_SERVER_IP>:9236'  # Gitaly
-        - '<GITLAB_SERVER_IP>:9229'  # Workhorse
-        - '<GITLAB_SERVER_IP>:8082'  # Sidekiq
-        - '<GITLAB_RUNNER_IP>:9252'  # gitlab-runner
+  libvirt-exporter:
+    image: ghcr.io/inovex/prometheus-libvirt-exporter:2.2.0 
+    container_name: libvirt-exporter
+    restart: always
+    volumes:
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock:ro 
+      - /var/run/libvirt/libvirt-sock-ro:/var/run/libvirt/libvirt-sock-ro:ro 
+    ports:
+      - "9177:9177"
+    networks:
+      - monitoring-tier 
