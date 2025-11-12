@@ -1,0 +1,199 @@
+# 전역 설정
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager 설정
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 'alertmanager:9093'
+
+# 규칙 파일 로드
+rule_files:
+  - '/etc/prometheus/rules/*.yml'
+
+# 메트릭 수집 대상(Scrape Target) 목록
+scrape_configs:
+  ################################################################################
+  # 기본 모니터링 (프로메테우스 자신, Docker 컨테이너)
+  ################################################################################
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9099']
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  ################################################################################
+  # 서버 OS 및 하드웨어 모니터링 (Node Exporter)
+  ################################################################################
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['192.168.100.245:9100']
+        labels:
+          nodename: 'vm-server-01'
+      - targets: ['192.168.100.247:9100']
+        labels:
+          nodename: 'dev-server'
+      - targets: ['192.168.100.248:9100']
+        labels:
+          nodename: 'dev-gpu-server'
+      - targets: ['192.168.100.220:9100']
+        labels:
+          nodename: 'gitlab-server'
+      - targets: ['192.168.100.219:9100']
+        labels:
+          nodename: 'gitlab-runner'
+      - targets: ['192.168.204.3:9100']
+        labels:
+          nodename: 'ERP-server'
+
+  ################################################################################
+  # 가상화 플랫폼 모니터링 (KVM/Libvirt)
+  ################################################################################
+  - job_name: 'libvirt-exporter'
+    static_configs:
+      - targets:
+        - '192.168.100.247:9177'
+        - '192.168.100.248:9177'
+        - '192.168.100.245:9177'
+
+  ################################################################################
+  # 서비스 및 엔드포인트 가용성 모니터링 (Blackbox Exporter)
+  ################################################################################
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        - https://ncc.croms.co.kr
+        - http://210.95.250.145
+        - https://dev-ncc.croms.co.kr
+        - https://erp.clobot.co.kr
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: 'blackbox-tcp'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+        - 210.95.250.155:1883
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: 'blackbox-icmp'
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    static_configs:
+      - targets:
+        - 192.168.110.230
+        - 192.168.110.231
+        - 192.168.102.41
+        - 192.168.102.42
+        - 192.168.204.3
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  ################################################################################
+  # 네트워크 장비 모니터링 (SNMP Exporter)
+  ################################################################################
+  - job_name: 'snmp'
+    scrape_interval: 1m
+    scrape_timeout: 50s
+    params:
+      module: [if_mib_standard]
+    static_configs:
+      - targets:
+        - 192.168.100.1   # CISCO CBS350-24T-4X
+        - 192.168.100.3   # CISCO SG220-26
+        - 192.168.100.4   # CISCO SG220-26
+        - 192.168.100.5   # NETGEAR GS724TPV2
+        - 192.168.100.6   # NETGEAR XS708Ev2
+        - 192.168.100.9   # CISCO CBS220-24T-4G
+        - 192.168.100.10  # CISCO CBS220-24T-4G
+        - 192.168.102.41  # AX8004BCM
+        - 192.168.102.42  # AX8004M-TF
+        - 192.168.102.44  # Ring A8
+        - 192.168.102.45  # AX8004BCM-Platform
+        - 192.168.102.46  # A8004T-Logi
+        - 192.168.107.201 # aruba AP515
+        - 192.168.107.202 # aruba AP515
+        - 192.168.107.203 # aruba AP515
+        - 192.168.107.204 # aruba AP515
+        - 192.168.107.205 # aruba AP515
+        - 192.168.110.230 # NETGEAR Orbi Satellite
+        - 192.168.110.231 # NETGEAR Orbi Satellite
+        - 192.168.110.232 # NETGEAR Orbi Satellite
+        - 192.168.120.233 # NETGEAR Orbi Satellite
+        - 192.168.200.250 # A3004T
+        - 192.168.200.253 # A3004NS-M
+        # --- iDRAC 서버 IP 추가 ---
+        - 192.168.100.152 # ERP 서버 IDRAC
+        - 192.168.100.153 # GPU 서버 IDRAC
+        - 192.168.100.154 # DEV 서버 IDRAC
+        - 192.168.100.156 # 연구소 IDRAC
+        - 192.168.100.157 # VM서버1 IDRAC
+        - 192.168.100.158 # 750rx-server iDrac
+
+    # relabel_configs 블록을 하나로 통합합니다.
+    relabel_configs:
+      # iDRAC 장비(192.168.100.15x)인 경우, module을 'idrac'으로 변경
+      - source_labels: [__address__]
+        regex: '192\.168\.100\.15.*'
+        target_label: __param_module
+        replacement: 'idrac'
+
+      # Iptime 장비(192.168.102.x)인 경우, module을 'if_mib_iptime'으로 변경
+      - source_labels: [__address__]
+        regex: '192\.168\.102\..*'
+        target_label: __param_module
+        replacement: 'if_mib_iptime'
+
+      # --- 아래는 모든 타겟에 공통으로 적용되는 설정 ---
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 192.168.100.247:9116
+
+  ################################################################################
+  # 애플리케이션 및 서비스 모니터링 (HAProxy, GitLab 등)
+  ################################################################################
+  - job_name: 'haproxy'
+    static_configs:
+      - targets: ['haproxy-exporter:9101']
+
+  - job_name: 'gitlab'
+    static_configs:
+      - targets:
+        - '192.168.100.220:9100'  # Node
+        - '192.168.100.220:9121'  # Redis
+        - '192.168.100.220:9187'  # Postgres
+        - '192.168.100.220:9168'  # Puma
+        - '192.168.100.220:9236'  # Gitaly
+        - '192.168.100.220:9229'  # Workhorse
+        - '192.168.100.220:8082'  # Sidekiq
+        - '192.168.100.219:9252'  # gitlab-runner
