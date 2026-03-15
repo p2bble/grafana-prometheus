@@ -1,3 +1,5 @@
+> ⚠️ **Deprecated** — 새 레포로 이전됨: [infrastructure-monitoring](https://github.com/p2bble/infrastructure-monitoring)
+
 # Prometheus & Grafana 기반 통합 모니터링 시스템
 
 이 리포지토리는 Docker Compose를 사용하여 Prometheus, Grafana, Loki 및 관련 Exporter들을 구축하여 통합 모니터링 환경을 구성하는 프로젝트입니다.
